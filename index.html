@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EPI k-space sampling viewer (CAIPI &amp; segmentation)</title>
+<style>body{margin:0;padding:12px;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;}</style>
+</head>
+<body>
+<!--
+  EPI / CAIPI k-space sampling viewer
+  Self-contained (no external libraries). Paste everything in this file into a
+  WordPress "Custom HTML" block, or open it directly in a browser.
+
+  Sampling model follows Stirnberg & St&#246;cker, "Segmented K-Space Blipped-Controlled
+  Aliasing in Parallel Imaging (Skipped-CAIPI)", MRM 2020, doi:10.1002/mrm.28486:
+    - CAIPI lattice:  (ky, kz) sampled  <=>  ky mod Ry = 0  and  (kz - (ky/Ry)*Dz) mod Rz = 0
+    - One kz block (Rz partitions) is covered by the blipped-CAIPI trajectory;
+      segmentation S takes every S-th echo of that trajectory per shot (skipped-CAIPI).
+-->
+<div class="epiv-root" id="epiv">
+<style>
+.epiv-root {
+  --surface: #fcfcfb; --page: #f4f4f1; --ink: #0b0b0b; --ink2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --empty: #eeede8; --axis: #c3c2b7; --border: rgba(11,11,11,0.12);
+  --accent: #2a78d6;
+  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s5:#e87ba4; --s6:#008300; --s7:#6250d6; --s8:#e34948;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: var(--ink); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 10px;
+  padding: 18px; max-width: 960px; margin: 0 auto; box-sizing: border-box;
+  font-size: 14px; line-height: 1.4;
+}
+@media (prefers-color-scheme: dark) {
+  .epiv-root.epiv-auto {
+    --surface: #1a1a19; --page: #0d0d0d; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --empty: #262624; --axis: #383835; --border: rgba(255,255,255,0.12);
+    --accent: #3987e5;
+    --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#008300; --s7:#9085e9; --s8:#e66767;
+  }
+}
+.epiv-root * { box-sizing: border-box; }
+.epiv-root h3 { margin: 0 0 4px; font-size: 18px; font-weight: 600; color: var(--ink); }
+.epiv-root .epiv-sub { margin: 0 0 14px; color: var(--ink2); font-size: 13px; }
+.epiv-root .epiv-controls {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px 18px;
+  padding: 12px; background: var(--page); border-radius: 8px; margin-bottom: 12px;
+}
+.epiv-root .epiv-ctl label { display: flex; justify-content: space-between; font-size: 13px; color: var(--ink2); }
+.epiv-root .epiv-ctl label b { color: var(--ink); font-variant-numeric: tabular-nums; }
+.epiv-root .epiv-ctl input[type=range] { width: 100%; margin: 4px 0 0; accent-color: var(--accent); }
+.epiv-root .epiv-row { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin-bottom: 10px; font-size: 13px; color: var(--ink2); }
+.epiv-root select, .epiv-root button {
+  font: inherit; font-size: 13px; color: var(--ink); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; cursor: pointer;
+}
+.epiv-root button:hover, .epiv-root select:hover { border-color: var(--accent); }
+.epiv-root .epiv-info { display: flex; flex-wrap: wrap; gap: 6px 22px; margin: 4px 0 12px; font-size: 13px; color: var(--ink2); }
+.epiv-root .epiv-info b { color: var(--ink); font-variant-numeric: tabular-nums; }
+.epiv-root .epiv-type { font-weight: 600; color: var(--ink); }
+.epiv-root .epiv-plot { position: relative; width: 100%; }
+.epiv-root svg { display: block; width: 100%; height: auto; user-select: none; }
+.epiv-root .epiv-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--ink2); margin-top: 10px; }
+.epiv-root .epiv-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.epiv-root .epiv-legend i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+.epiv-root .epiv-tip {
+  position: absolute; pointer-events: none; background: var(--surface); color: var(--ink);
+  border: 1px solid var(--border); border-radius: 6px; padding: 6px 9px; font-size: 12px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.15); white-space: nowrap; display: none; z-index: 5;
+  font-variant-numeric: tabular-nums;
+}
+.epiv-root .epiv-note { font-size: 12px; color: var(--muted); margin-top: 12px; }
+.epiv-root .epiv-note a { color: var(--accent); }
+</style>
+
+<h3>EPI k-space sampling: CAIPI &amp; segmentation</h3>
+<p class="epiv-sub">Each square is one (k<sub>y</sub>, k<sub>z</sub>) phase-encode position. Colored squares are acquired; the color shows the segment (shot within a k<sub>z</sub> block). Hover or click a sample to highlight every line acquired in the same shot, in echo order.</p>
+
+<div class="epiv-controls">
+  <div class="epiv-ctl"><label>Acceleration R<sub>y</sub> <b data-out="Ry"></b></label><input type="range" data-in="Ry" min="1" max="8" value="1"></div>
+  <div class="epiv-ctl"><label>Acceleration R<sub>z</sub> <b data-out="Rz"></b></label><input type="range" data-in="Rz" min="1" max="8" value="3"></div>
+  <div class="epiv-ctl"><label>CAIPI shift &#916;z <b data-out="Dz"></b></label><input type="range" data-in="Dz" min="0" max="2" value="1"></div>
+  <div class="epiv-ctl"><label>Segmentation S <b data-out="S"></b></label><input type="range" data-in="S" min="1" max="15" value="3"></div>
+  <div class="epiv-ctl"><label>Grid k<sub>y</sub> lines <b data-out="Ny"></b></label><input type="range" data-in="Ny" min="8" max="96" step="4" value="20"></div>
+  <div class="epiv-ctl"><label>Grid k<sub>z</sub> partitions <b data-out="Nz"></b></label><input type="range" data-in="Nz" min="2" max="48" value="8"></div>
+</div>
+
+<div class="epiv-row">
+  <span>Trajectory:
+    <select data-in="traj">
+      <option value="shot">selected shot only</option>
+      <option value="block" selected>all shots of selected kz block</option>
+      <option value="all">all shots</option>
+      <option value="none">none</option>
+    </select>
+  </span>
+  <button type="button" data-act="play">&#9654; Play acquisition order</button>
+  <span data-out="playinfo"></span>
+</div>
+
+<div class="epiv-info" data-out="info"></div>
+
+<div class="epiv-plot">
+  <svg data-out="svg" role="img" aria-label="ky-kz sampling pattern"></svg>
+  <div class="epiv-tip" data-out="tip"></div>
+</div>
+<div class="epiv-legend" data-out="legend"></div>
+
+<p class="epiv-note">
+  Pattern notation S&#183;(R<sub>y</sub>&#215;R<sub>z</sub>)<sub>z&#916;</sub>. Within a shot the echo train runs along k<sub>y</sub>;
+  k<sub>z</sub> blips are b<sup>(1)</sup> = (S&#183;&#916;z) mod R<sub>z</sub> and &#8722;b<sup>(2)</sup> = &#8722;(R<sub>z</sub>&#8722;b<sup>(1)</sup>) mod R<sub>z</sub>,
+  repeating every n<sub>S</sub> echoes. Successive k<sub>z</sub> blocks (R<sub>z</sub> partitions each) are acquired by further excitations.
+  Shot numbering (block-major) is for illustration; the actual loop order is vendor-specific.
+  Based on Stirnberg &amp; St&#246;cker, MRM 2020, <a href="https://doi.org/10.1002/mrm.28486" target="_blank" rel="noopener">doi:10.1002/mrm.28486</a>.
+</p>
+
+<script>
+(function () {
+  var root = document.getElementById('epiv');
+  if (!root || root.dataset.ready) return;
+  root.dataset.ready = '1';
+  root.classList.add('epiv-auto');
+
+  var NS = 'http://www.w3.org/2000/svg';
+  var $in = function (k) { return root.querySelector('[data-in="' + k + '"]'); };
+  var $out = function (k) { return root.querySelector('[data-out="' + k + '"]'); };
+  var svg = $out('svg'), tip = $out('tip');
+
+  var state = { selShot: 0, hoverShot: null, playStep: null, timer: null };
+
+  function mod(a, n) { return ((a % n) + n) % n; }
+  function css(name) { return getComputedStyle(root).getPropertyValue(name).trim(); }
+
+  // Segment colors: categorical slots for S <= 8; sequential blue ramp beyond.
+  var seqRamp = ['#cde2fb','#b7d3f6','#9ec5f4','#86b6ef','#6da7ec','#5598e7','#3987e5','#2a78d6','#256abf','#1c5cab','#184f95','#104281','#0d366b'];
+  function segColor(s, S) {
+    if (S <= 8) return css('--s' + (s + 1));
+    // ordinal ramp: interpolate step 250 -> 700 so every segment gets its own shade
+    var t = (s / (S - 1)) * (seqRamp.length - 4) + 3, i = Math.min(Math.floor(t), seqRamp.length - 2), f = t - i;
+    var a = seqRamp[i], b = seqRamp[i + 1], out = '#';
+    for (var c = 1; c < 7; c += 2) {
+      var v = Math.round(parseInt(a.substr(c, 2), 16) * (1 - f) + parseInt(b.substr(c, 2), 16) * f);
+      out += (v < 16 ? '0' : '') + v.toString(16);
+    }
+    return out;
+  }
+
+  function params() {
+    var p = {};
+    ['Ry', 'Rz', 'Dz', 'S', 'Ny', 'Nz'].forEach(function (k) { p[k] = parseInt($in(k).value, 10); });
+    p.traj = $in('traj').value;
+    return p;
+  }
+
+  // Eq. A1 / A2 of the paper
+  function zblips(Rz, Dz, S) { var b1 = mod(S * Dz, Rz); return [b1, mod(Rz - b1, Rz)]; }
+  function zcycle(Rz, bmin) { if (bmin === 0) return 1; return Rz % bmin === 0 ? Rz / bmin : Rz; }
+
+  // Build list of samples with shot / echo assignment.
+  function compute(p) {
+    var samples = [], shots = {};
+    var nLines = Math.ceil(p.Ny / p.Ry);          // ky lines on the Ry lattice
+    var nBlocks = Math.ceil(p.Nz / p.Rz);         // kz blocks (excitations without segmentation)
+    for (var b = 0; b < nBlocks; b++) {
+      for (var i = 0; i < nLines; i++) {
+        var ky = i * p.Ry;
+        var kz = b * p.Rz + mod(i * p.Dz, p.Rz);
+        if (kz >= p.Nz) continue;
+        var seg = i % p.S;
+        var shot = b * p.S + seg;
+        var smp = { ky: ky, kz: kz, block: b, seg: seg, shot: shot, echo: Math.floor(i / p.S) };
+        samples.push(smp);
+        (shots[shot] = shots[shot] || []).push(smp);
+      }
+    }
+    return { samples: samples, shots: shots, nShots: nBlocks * p.S, nBlocks: nBlocks, nLines: nLines };
+  }
+
+  function el(name, attrs, parent) {
+    var e = document.createElementNS(NS, name);
+    for (var k in attrs) e.setAttribute(k, attrs[k]);
+    if (parent) parent.appendChild(e);
+    return e;
+  }
+
+  var model, P, geo;
+
+  function render() {
+    P = params();
+    // keep Dz in [0, Rz-1]
+    var dz = $in('Dz'); dz.max = Math.max(0, P.Rz - 1);
+    if (P.Dz > P.Rz - 1) { dz.value = P.Rz - 1; P.Dz = P.Rz - 1; }
+    ['Ry', 'Rz', 'Dz', 'S', 'Ny', 'Nz'].forEach(function (k) { $out(k).textContent = P[k]; });
+
+    model = compute(P);
+    if (state.selShot >= model.nShots) state.selShot = 0;
+
+    // ---- info line
+    var b1 = zblips(P.Rz, P.Dz, 1), bS = zblips(P.Rz, P.Dz, P.S);
+    var n1 = zcycle(P.Rz, Math.min(b1[0], b1[1])), nS = zcycle(P.Rz, Math.min(bS[0], bS[1]));
+    var type;
+    if (P.Dz === 0 || P.Rz === 1) type = P.S === 1 ? 'Single-shot EPI (no CAIPI)' : 'Segmented EPI (no CAIPI)';
+    else if (P.S === 1) type = 'Blipped-CAIPI';
+    else if (Math.min(bS[0], bS[1]) === 0) type = 'Shot-selective CAIPI (no z-blips)';
+    else type = 'Skipped-CAIPI';
+    var echoes = Math.ceil(model.nLines / P.S);
+    $out('info').innerHTML =
+      '<span class="epiv-type">' + type + '</span>' +
+      '<span>Pattern <b>' + P.S + '\u00b7(' + P.Ry + '\u00d7' + P.Rz + ')<sub>z' + P.Dz + '</sub></b></span>' +
+      '<span>R = <b>' + (P.Ry * P.Rz) + '</b></span>' +
+      '<span>z-blips <b>+' + bS[0] + ' / \u2212' + bS[1] + '</b> (cycle n<sub>S</sub> = <b>' + nS + '</b>)</span>' +
+      '<span>Echoes/shot \u2248 <b>' + echoes + '</b></span>' +
+      '<span>Shots = <b>' + model.nShots + '</b> (' + model.nBlocks + ' k<sub>z</sub> block' + (model.nBlocks > 1 ? 's' : '') + ' \u00d7 ' + P.S + ')</span>';
+
+    // ---- legend
+    var lg = '';
+    for (var s = 0; s < P.S; s++) lg += '<span><i style="background:' + segColor(s, P.S) + '"></i>segment ' + (s + 1) + '</span>';
+    lg += '<span><i style="background:' + css('--empty') + ';border:1px solid ' + css('--axis') + '"></i>not sampled</span>';
+    $out('legend').innerHTML = lg;
+
+    draw();
+  }
+
+  function draw() {
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    var cell = Math.max(6, Math.min(26, Math.floor(880 / P.Ny)));
+    var padL = 44, padT = 26, padR = 8, padB = 34;
+    var W = padL + P.Ny * cell + padR, H = padT + P.Nz * cell + padB;
+    geo = { cell: cell, padL: padL, padT: padT };
+    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+    svg.style.maxWidth = W * 1.4 + 'px';
+
+    var muted = css('--muted'), empty = css('--empty'), surface = css('--surface'), ink = css('--ink');
+    var gap = cell >= 10 ? 1.5 : 0.75;
+
+    // background cells
+    var g0 = el('g', {}, svg);
+    for (var z = 0; z < P.Nz; z++) for (var y = 0; y < P.Ny; y++)
+      el('rect', { x: padL + y * cell + gap / 2, y: padT + z * cell + gap / 2, width: cell - gap, height: cell - gap, rx: cell >= 10 ? 2 : 1, fill: empty }, g0);
+
+    // kz-block separators
+    for (var b = 1; b < model.nBlocks; b++) {
+      var yy = padT + b * P.Rz * cell;
+      el('line', { x1: padL - 4, x2: padL + P.Ny * cell, y1: yy, y2: yy, stroke: muted, 'stroke-width': 1, 'stroke-dasharray': '3 3' }, svg);
+    }
+
+    // axes labels / ticks
+    var tickEvery = function (n) { return n <= 16 ? 1 : n <= 32 ? 2 : n <= 64 ? 4 : 8; };
+    var ty = tickEvery(P.Ny), tz = tickEvery(P.Nz);
+    for (var y2 = 0; y2 < P.Ny; y2 += ty) {
+      var t = el('text', { x: padL + (y2 + 0.5) * cell, y: padT - 8, 'text-anchor': 'middle', 'font-size': 10, fill: muted }, svg); t.textContent = y2;
+    }
+    for (var z2 = 0; z2 < P.Nz; z2 += tz) {
+      var t2 = el('text', { x: padL - 8, y: padT + (z2 + 0.5) * cell + 3.5, 'text-anchor': 'end', 'font-size': 10, fill: muted }, svg); t2.textContent = z2;
+    }
+    var xl = el('text', { x: padL + P.Ny * cell / 2, y: H - 8, 'text-anchor': 'middle', 'font-size': 12, fill: css('--ink2') }, svg);
+    xl.textContent = 'ky (primary phase encode, echo-train direction) \u2192';
+    var zl = el('text', { x: 12, y: padT + P.Nz * cell / 2, 'text-anchor': 'middle', 'font-size': 12, fill: css('--ink2'), transform: 'rotate(-90 12 ' + (padT + P.Nz * cell / 2) + ')' }, svg);
+    zl.textContent = 'kz (partition) \u2192';
+
+    var active = state.hoverShot != null ? state.hoverShot : state.selShot;
+    var activeBlock = Math.floor(active / P.S);
+    var playing = state.playStep != null;
+
+    // order index (acquisition time) for play mode
+    var orderIdx = {};
+    if (playing) {
+      var n = 0;
+      for (var sh = 0; sh < model.nShots; sh++) (model.shots[sh] || []).forEach(function (s) { orderIdx[s.ky + ',' + s.kz] = n++; });
+    }
+
+    // trajectories (under the sample marks)
+    var gT = el('g', { fill: 'none', 'stroke-linecap': 'round' }, svg);
+    var showShot = function (sh) {
+      if (P.traj === 'none') return false;
+      if (P.traj === 'all') return true;
+      if (P.traj === 'block') return Math.floor(sh / P.S) === activeBlock;
+      return sh === active;
+    };
+    for (var sh2 = 0; sh2 < model.nShots; sh2++) {
+      if (!showShot(sh2) && !(playing)) continue;
+      var list = model.shots[sh2]; if (!list || list.length < 2) continue;
+      if (playing) {
+        var last = state.playStep;
+        list = list.filter(function (s) { return orderIdx[s.ky + ',' + s.kz] <= last; });
+        if (list.length < 2) continue;
+      }
+      var isAct = sh2 === active;
+      var d = '';
+      for (var k = 0; k < list.length; k++) {
+        var cx = padL + (list[k].ky + 0.5) * cell, cy = padT + (list[k].kz + 0.5) * cell;
+        if (k === 0) d += 'M' + cx + ' ' + cy;
+        else {
+          var px = padL + (list[k - 1].ky + 0.5) * cell, py = padT + (list[k - 1].kz + 0.5) * cell, mx = (px + cx) / 2;
+          d += ' C' + mx + ' ' + py + ' ' + mx + ' ' + cy + ' ' + cx + ' ' + cy; // smooth blip (parabolic-like)
+        }
+      }
+      el('path', { d: d, stroke: isAct ? ink : segColor(sh2 % P.S, P.S), 'stroke-width': isAct ? 2 : 1.25, opacity: isAct ? 0.9 : 0.6 }, gT);
+    }
+
+    // sample marks
+    var gS = el('g', {}, svg);
+    var showNum = cell >= 16;
+    model.samples.forEach(function (s) {
+      if (playing && orderIdx[s.ky + ',' + s.kz] > state.playStep) return;
+      var dim = (state.hoverShot != null || P.traj === 'shot') && s.shot !== active && !playing;
+      var r = el('rect', {
+        x: padL + s.ky * cell + gap / 2, y: padT + s.kz * cell + gap / 2, width: cell - gap, height: cell - gap,
+        rx: cell >= 10 ? 2 : 1, fill: segColor(s.seg, P.S), opacity: dim ? 0.28 : 1,
+        stroke: s.shot === active ? ink : 'none', 'stroke-width': s.shot === active ? 1.5 : 0
+      }, gS);
+      r.__s = s;
+      if (showNum) {
+        var t = el('text', { x: padL + (s.ky + 0.5) * cell, y: padT + (s.kz + 0.5) * cell + 3.5, 'text-anchor': 'middle', 'font-size': Math.min(10, cell * 0.45), fill: ((P.S <= 8 && s.seg === 3) || (P.S > 8 && s.seg < P.S * 0.4)) ? '#0b0b0b' : '#fff', 'pointer-events': 'none', opacity: dim ? 0.4 : 1 }, gS);
+        t.textContent = s.echo + 1;
+      }
+    });
+  }
+
+  // ---- interaction
+  function sampleAt(evt) {
+    var pt = svg.createSVGPoint(); pt.x = evt.clientX; pt.y = evt.clientY;
+    var m = svg.getScreenCTM(); if (!m) return null;
+    var q = pt.matrixTransform(m.inverse());
+    var ky = Math.floor((q.x - geo.padL) / geo.cell), kz = Math.floor((q.y - geo.padT) / geo.cell);
+    if (ky < 0 || kz < 0 || ky >= P.Ny || kz >= P.Nz) return { ky: ky, kz: kz, out: true };
+    for (var i = 0; i < model.samples.length; i++) { var s = model.samples[i]; if (s.ky === ky && s.kz === kz) return s; }
+    return { ky: ky, kz: kz };
+  }
+  svg.addEventListener('mousemove', function (e) {
+    if (state.playStep != null) return;
+    var s = sampleAt(e);
+    var host = root.querySelector('.epiv-plot').getBoundingClientRect();
+    if (!s || s.out) { tip.style.display = 'none'; if (state.hoverShot != null) { state.hoverShot = null; draw(); } return; }
+    if (s.shot != null) {
+      tip.innerHTML = 'k<sub>y</sub> = ' + s.ky + ', k<sub>z</sub> = ' + s.kz + '<br><b>Shot ' + (s.shot + 1) + '</b> (k<sub>z</sub> block ' + (s.block + 1) + ', segment ' + (s.seg + 1) + ')<br>Echo ' + (s.echo + 1) + ' of ' + model.shots[s.shot].length;
+    } else {
+      tip.innerHTML = 'k<sub>y</sub> = ' + s.ky + ', k<sub>z</sub> = ' + s.kz + '<br><span style="color:' + css('--muted') + '">not sampled</span>';
+    }
+    tip.style.display = 'block';
+    var x = e.clientX - host.left + 14, y = e.clientY - host.top + 14;
+    if (x + tip.offsetWidth > host.width) x = e.clientX - host.left - tip.offsetWidth - 10;
+    tip.style.left = x + 'px'; tip.style.top = y + 'px';
+    var hs = s.shot != null ? s.shot : null;
+    if (hs !== state.hoverShot) { state.hoverShot = hs; draw(); }
+  });
+  svg.addEventListener('mouseleave', function () { tip.style.display = 'none'; if (state.hoverShot != null) { state.hoverShot = null; draw(); } });
+  svg.addEventListener('click', function (e) { var s = sampleAt(e); if (s && s.shot != null) { state.selShot = s.shot; draw(); } });
+
+  function stopPlay() {
+    if (state.timer) clearInterval(state.timer);
+    state.timer = null; state.playStep = null;
+    $out('playinfo').textContent = '';
+    root.querySelector('[data-act="play"]').textContent = '\u25b6 Play acquisition order';
+  }
+  root.querySelector('[data-act="play"]').addEventListener('click', function () {
+    if (state.timer) { stopPlay(); draw(); return; }
+    var total = model.samples.length;
+    var ordered = [];
+    for (var sh = 0; sh < model.nShots; sh++) ordered = ordered.concat(model.shots[sh] || []);
+    state.playStep = -1;
+    this.textContent = '\u25a0 Stop';
+    var delay = Math.max(15, Math.min(120, 6000 / total));
+    state.timer = setInterval(function () {
+      state.playStep++;
+      if (state.playStep >= total) { stopPlay(); draw(); return; }
+      var s = ordered[state.playStep];
+      state.selShot = s.shot;
+      $out('playinfo').innerHTML = 'Shot <b>' + (s.shot + 1) + '</b> / ' + model.nShots + ', echo ' + (s.echo + 1);
+      draw();
+    }, delay);
+  });
+
+  root.querySelectorAll('[data-in]').forEach(function (inp) {
+    inp.addEventListener('input', function () { stopPlay(); render(); });
+  });
+  if (window.matchMedia) {
+    var mq = window.matchMedia('(prefers-color-scheme: dark)');
+    if (mq.addEventListener) mq.addEventListener('change', render);
+  }
+  render();
+})();
+</script>
+</div>
+
+</body>
+</html>
